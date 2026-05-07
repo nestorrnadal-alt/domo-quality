@@ -207,7 +207,7 @@ function render(rows) {
 
   if (focus.length) {
     html += `<div class="card alert">
-      <h2>Foco de hoy</h2>
+      <h2>Foco de esta semana</h2>
       <div class="small" style="margin-bottom:8px">${triggered.length} limpiadora${triggered.length===1?'':'s'} requiere${triggered.length===1?'':'n'} atención · ${recovering.length} merece${recovering.length===1?'':'n'} reconocimiento</div>
       <ol>${focus.map(f => `<li><span class="pill ${f.pill}">${f.tag}</span>${escapeHtml(f.text)}</li>`).join('')}</ol>
     </div>`;
