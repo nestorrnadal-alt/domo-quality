@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Domo · Calidad de Limpieza</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+         background: #f9f9f6; color: #2c2c2a; margin: 0; padding: 24px;
+         font-size: 14px; line-height: 1.5; }
+  .wrap { max-width: 920px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; font-size: 22px; font-weight: 500; }
+  h2 { margin: 0 0 12px; font-size: 16px; font-weight: 500; }
+  .sub { color: #666; font-size: 13px; margin: 0 0 24px; }
+  .card { background: #fff; border: 0.5px solid rgba(0,0,0,0.12); border-radius: 12px;
+          padding: 16px 20px; margin-bottom: 20px; }
+  .card.alert { border-left: 3px solid #A32D2D; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 8px; font-size: 11px;
+          font-weight: 500; margin-right: 6px; }
+  .pill-red { background:#FCEBEB; color:#791F1F; }
+  .pill-amber { background:#FAEEDA; color:#633806; }
+  .pill-green { background:#EAF3DE; color:#27500A; }
+  .pill-blue { background:#E6F1FB; color:#0C447C; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align:left; font-weight:500; font-size:12px; color:#666;
+       background:#f1efe8; padding:10px 12px; }
+  td { padding: 12px; border-top: 0.5px solid rgba(0,0,0,0.08); vertical-align: top; }
+  tr.qc-trigger { background: rgba(163,45,45,0.04); }
+  .row-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .feed-item { padding: 6px 0; font-size: 13px;
+               border-top: 0.5px solid rgba(0,0,0,0.08); }
+  .feed-item:first-child { border-top: 0; }
+  .feed-flex { display: flex; justify-content: space-between; gap: 12px; }
+  .small { font-size: 11px; color: #999; }
+  .score-good { color: #27500A; font-weight: 500; }
+  .score-warn { color: #BA7517; font-weight: 500; }
+  .score-bad { color: #A32D2D; font-weight: 500; }
+  ol { margin: 0; padding-left: 20px; }
+  li { margin: 6px 0; }
+  #loading { padding: 40px; text-align: center; color: #666; }
+  .err { color: #A32D2D; padding: 16px; background:#FCEBEB; border-radius:8px; }
+  .reload-btn { font-size: 12px; padding: 4px 10px; border:0.5px solid rgba(0,0,0,0.2);
+                background:#fff; border-radius:6px; cursor:pointer; }
+  .reload-btn:hover { background:#f1efe8; }
+  .meta { display:flex; justify-content:space-between; align-items:baseline;
+          margin-bottom:4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="meta">
+    <h1>Calidad de limpieza · pulso diario</h1>
+    <div><button class="reload-btn" onclick="load()">Recargar</button></div>
+  </div>
+  <p class="sub">Para Janet y Jenny · Lee de Supabase <code>cleaning_inspections_cache</code> · <span id="last-update"></span></p>
+  <div id="loading">Cargando datos...</div>
+  <div id="content" hidden></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const SUPABASE_URL = 'https://dowkxvpdpqqaufjqcjmp.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRvd2t4dnBkcHFxYXVmanFjam1wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE1Mjg0ODgsImV4cCI6MjA4NzEwNDQ4OH0.dK130-ltr_0xJH79ASQ7DQ0ClF9ZptL8BQ50jQ9eq3E';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+const TODAY = new Date(); TODAY.setHours(0,0,0,0);
+const daysAgo = n => { const d = new Date(TODAY); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); };
+const dParse = s => new Date(s+'T00:00:00');
+const fmtMonth = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+const fmtDate = s => { const d = dParse(s); return d.getDate()+' '+fmtMonth[d.getMonth()]; };
+const escapeHtml = s => (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+const scoreClass = s => s === null || s === undefined ? '' : s >= 4.5 ? 'score-good' : s >= 4.0 ? 'score-warn' : 'score-bad';
+
+async function load() {
+  document.getElementById('loading').hidden = false;
+  document.getElementById('loading').textContent = 'Cargando datos...';
+  document.getElementById('content').hidden = true;
+
+  const since = daysAgo(90);
+  const { data, error } = await sb
+    .from('cleaning_inspections_cache')
+    .select('*')
+    .gte('service_date', since)
+    .order('service_date', { ascending: false });
+
+  if (error) {
+    document.getElementById('loading').innerHTML = '<div class="err">Error: '+escapeHtml(error.message)+'</div>';
+    return;
+  }
+  render(data);
+  document.getElementById('last-update').textContent = 'Actualizado: ' + new Date().toLocaleString('es-PR');
+}
+
+function statusFor(events) {
+  const n = events.length;
+  if (n === 0) return { label:'OK', cls:'pill-green' };
+  if (n >= 4) return { label:'Revisión QC', cls:'pill-red' };
+  if (n >= 3) {
+    const sorted = [...events].sort((a,b) => b.service_date.localeCompare(a.service_date));
+    if ((sorted[0].score ?? 0) >= 4.5) return { label:'Recuperándose', cls:'pill-amber' };
+    return { label:'Monitor', cls:'pill-amber' };
+  }
+  if (n >= 2) return { label:'Monitor', cls:'pill-amber' };
+  return { label:'OK', cls:'pill-green' };
+}
+
+function sparkline(scores) {
+  if (!scores.length) return '<svg width="100" height="22"></svg>';
+  if (scores.length === 1) {
+    const y = 22 - ((scores[0]-3)/2)*18;
+    return `<svg width="100" height="22"><line x1="4" y1="14" x2="92" y2="14" stroke="#D3D1C7" stroke-width="1" stroke-dasharray="2,2"/><circle cx="92" cy="${y}" r="3" fill="#3B6D11"/></svg>`;
+  }
+  const w = 96, h = 22;
+  const xs = scores.map((_, i) => 4 + (i / (scores.length-1)) * (w-4));
+  const ys = scores.map(s => h - 4 - ((s-3)/2) * (h-8));
+  const pts = xs.map((x, i) => `${x.toFixed(1)},${ys[i].toFixed(1)}`).join(' ');
+  const last = scores[scores.length-1];
+  const trend = scores[scores.length-1] - scores[0];
+  const color = trend > 0.3 ? '#3B6D11' : trend < -0.3 ? '#A32D2D' : '#888780';
+  return `<svg width="${w+4}" height="${h}"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/><circle cx="${xs[xs.length-1].toFixed(1)}" cy="${ys[ys.length-1].toFixed(1)}" r="3" fill="${color}"/></svg>`;
+}
+
+function render(rows) {
+  const cutoff60 = daysAgo(60);
+  const cutoff30 = daysAgo(30);
+  const cutoff7 = daysAgo(7);
+
+  // Group by cleaner — last 60d, only attributable rows
+  const byCleaner = {};
+  rows.filter(r => r.cleaner_name && r.service_date >= cutoff60).forEach(r => {
+    const c = byCleaner[r.cleaner_name] = byCleaner[r.cleaner_name] || { events: [] };
+    c.events.push(r);
+  });
+
+  // Sort cleaners by event count desc, then by latest service date
+  const cleaners = Object.entries(byCleaner).map(([name, c]) => {
+    const sorted = [...c.events].sort((a,b) => a.service_date.localeCompare(b.service_date));
+    const latest = sorted[sorted.length-1];
+    const sevCounts = {};
+    c.events.forEach(e => { if (e.severity) sevCounts[e.severity] = (sevCounts[e.severity]||0) + 1; });
+    const sev = ['S1','S2','S3','S4'].filter(k => sevCounts[k]).map(k => `${k} ×${sevCounts[k]}`).join(' · ');
+    const scoresWithDates = sorted.filter(e => e.score !== null && e.service_date >= cutoff30).map(e => e.score);
+    return {
+      name, count: c.events.length, lastScore: latest.score, lastDate: latest.service_date,
+      lastProp: latest.property_name, sev, scores: scoresWithDates,
+      ...statusFor(c.events)
+    };
+  }).sort((a,b) => b.count - a.count || b.lastDate.localeCompare(a.lastDate));
+
+  // === Today's focus ===
+  const focus = [];
+  const triggered = cleaners.filter(c => c.count >= 3 && c.label !== 'Recuperándose');
+  triggered.forEach(c => focus.push({ pill:'pill-red', tag:'Revisión QC', text:`${c.name} — ${c.count} eventos en 60d → coaching 1:1 obligatorio` }));
+  const recovering = cleaners.filter(c => c.label === 'Recuperándose');
+  recovering.forEach(c => focus.push({ pill:'pill-green', tag:'Reconocer', text:`${c.name} — score ${c.lastScore} en última inspección, recuperación visible` }));
+  if (triggered.length) focus.push({ pill:'pill-amber', tag:'Acompañar', text:`Jenny acompaña a ${triggered[0].name} en su próxima limpieza WI` });
+
+  // === Recent catches (last 7d, score < 5 OR has severity) ===
+  const recent = rows.filter(r => r.service_date >= cutoff7 && r.cleaner_name)
+                     .sort((a,b) => b.service_date.localeCompare(a.service_date));
+
+  // === Property hot list (last 30d) ===
+  const propMap = {};
+  rows.filter(r => r.property_name && r.service_date >= cutoff30 && r.severity)
+      .forEach(r => {
+        const p = propMap[r.property_name] = propMap[r.property_name] || { name:r.property_name, count:0, last:null, sevs:[] };
+        p.count++;
+        if (!p.last || r.service_date > p.last) p.last = r.service_date;
+        p.sevs.push({ sev:r.severity, date:r.service_date });
+      });
+  const props = Object.values(propMap).sort((a,b) => b.count - a.count || b.last.localeCompare(a.last)).slice(0, 6);
+
+  // === Build HTML ===
+  let html = '';
+
+  if (focus.length) {
+    html += `<div class="card alert">
+      <h2>Foco de hoy</h2>
+      <div class="small" style="margin-bottom:8px">${triggered.length} limpiadora${triggered.length===1?'':'s'} requiere${triggered.length===1?'':'n'} atención · ${recovering.length} merece${recovering.length===1?'':'n'} reconocimiento</div>
+      <ol>${focus.map(f => `<li><span class="pill ${f.pill}">${f.tag}</span>${escapeHtml(f.text)}</li>`).join('')}</ol>
+    </div>`;
+  }
+
+  html += `<div class="card">
+    <h2>Panel de calor · limpiadoras (últimos 60 días)</h2>
+    <table><thead><tr>
+      <th>Limpiadora</th><th>Estado</th><th>60d</th><th>Tendencia (30d)</th><th>Última</th>
+    </tr></thead><tbody>`;
+  cleaners.forEach(c => {
+    const isQC = c.label === 'Revisión QC';
+    html += `<tr class="${isQC?'qc-trigger':''}">
+      <td><div style="font-weight:500">${escapeHtml(c.name)}</div><div class="small">${escapeHtml(c.sev)}</div></td>
+      <td><span class="pill ${c.cls}">${c.label}</span></td>
+      <td style="text-align:center;font-weight:500">${c.count}</td>
+      <td>${sparkline(c.scores)}</td>
+      <td><div class="${scoreClass(c.lastScore)}">${c.lastScore ?? '—'}</div><div class="small">${fmtDate(c.lastDate)} · ${escapeHtml(c.lastProp||'')}</div></td>
+    </tr>`;
+  });
+  if (!cleaners.length) html += '<tr><td colspan="5" class="small" style="text-align:center;padding:24px">Sin inspecciones en últimos 60 días</td></tr>';
+  html += `</tbody></table></div>`;
+
+  html += `<div class="row-grid">
+    <div class="card">
+      <h2>Últimos 7 días</h2>
+      ${recent.length ? recent.map(r => `
+        <div class="feed-item"><div class="feed-flex">
+          <span><span class="small" style="margin-right:6px">${fmtDate(r.service_date)}</span>${escapeHtml(r.cleaner_name)} · ${escapeHtml(r.property_name||'')}</span>
+          <span class="${scoreClass(r.score)}">${r.score ?? '—'}</span>
+        </div></div>`).join('') : '<div class="small" style="padding:8px 0">Sin inspecciones en últimos 7 días</div>'}
+    </div>
+    <div class="card">
+      <h2>Propiedades con catches (30d)</h2>
+      ${props.length ? props.map(p => `
+        <div class="feed-item"><div class="feed-flex">
+          <span>${escapeHtml(p.name)}</span>
+          <span class="small">${p.count} catch${p.count===1?'':'es'}</span>
+        </div><div class="small">${p.sevs.slice(0,3).map(s => `${s.sev} ${fmtDate(s.date)}`).join(' · ')}</div></div>`).join('') : '<div class="small" style="padding:8px 0">Sin catches en últimos 30 días</div>'}
+    </div>
+  </div>`;
+
+  // Footer with totals
+  html += `<div class="small" style="text-align:center;padding:16px 0">
+    Base: ${rows.length} inspecciones cargadas · ${cleaners.length} limpiadoras activas en 60d · datos desde Supabase domo-leads
+  </div>`;
+
+  document.getElementById('content').innerHTML = html;
+  document.getElementById('loading').hidden = true;
+  document.getElementById('content').hidden = false;
+}
+
+load();
+</script>
+</body>
+</html>
