@@ -78,6 +78,13 @@ const SUPABASE_URL = 'https://dowkxvpdpqqaufjqcjmp.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRvd2t4dnBkcHFxYXVmanFjam1wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE1Mjg0ODgsImV4cCI6MjA4NzEwNDQ4OH0.dK130-ltr_0xJH79ASQ7DQ0ClF9ZptL8BQ50jQ9eq3E';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
+const CLEANER_ROSTER = new Set([
+  'Jenny Guilamo','Mirsa Heredia Rivera','Myriam Fuentes','Kyraisha Melendez',
+  'Marimat Ayala','Ovalesca Falette Cosme','Ruth Quintero','Marianis Muñoz',
+  'Jannymar Ayala','Norma Rodríguez','Joanny Rivera',
+  'Saturnina Alfonso','Clara Almonte','Emma Rodriguez'
+]);
+const cleanProviderName = (n) => n ? n.replace(/^\d+:\s*/, '').trim() : n;
 const TODAY = new Date(); TODAY.setHours(0,0,0,0);
 const daysAgo = n => { const d = new Date(TODAY); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); };
 const dParse = s => new Date(s+'T00:00:00');
@@ -112,7 +119,8 @@ async function load() {
   if (!shErr && shData) {
     shData.forEach(r => {
       if (!r.provider_team) return;
-      const name = r.provider_team.trim();
+      const name = cleanProviderName(r.provider_team);
+      if (!CLEANER_ROSTER.has(name)) return;
       if (!window.__bkPerCleaner[name]) window.__bkPerCleaner[name] = { sum:0, count:0 };
       window.__bkPerCleaner[name].sum += r.rating_value;
       window.__bkPerCleaner[name].count++;
@@ -152,7 +160,10 @@ function sparkline(scores) {
   return `<svg width="${w+4}" height="${h}"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/><circle cx="${xs[xs.length-1].toFixed(1)}" cy="${ys[ys.length-1].toFixed(1)}" r="3" fill="${color}"/></svg>`;
 }
 
-function render(rows) {
+function render(allRows) {
+  // Cleaner self-checklists are NOT QC events — exclude them from heat board, scorecard, feeds.
+  // Jenny's supervisor checklist is the QC signal.
+  const rows = allRows.filter(r => r.checklist_template !== 'Checklist Limpiadora');
   const cutoff60 = daysAgo(60);
   const cutoff30 = daysAgo(30);
   const cutoff7 = daysAgo(7);
@@ -259,6 +270,7 @@ function render(rows) {
   const scorecard = [];
   allCleaners.forEach(name => {
     if (!name) return;
+    if (!CLEANER_ROSTER.has(name)) return;
     const events = (byCleaner[name]?.events) || [];
     const eventsExcludingBK = events.filter(e => (e.raw_data?.source || '').toLowerCase() !== 'bk customer rating');
     const sevC = { S1:0, S2:0, S3:0, S4:0 };
