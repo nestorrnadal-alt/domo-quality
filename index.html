@@ -45,6 +45,20 @@
   .reload-btn:hover { background:#f1efe8; }
   .meta { display:flex; justify-content:space-between; align-items:baseline;
           margin-bottom:4px; }
+  .sc-row td { font-size:13px; }
+  .sc-total { font-weight:500; padding: 3px 10px; border-radius: 6px; display:inline-block; min-width: 48px; text-align:center; }
+  .sc-90 { background:#EAF3DE; color:#27500A; }
+  .sc-80 { background:#F4FBE5; color:#3B6D11; }
+  .sc-70 { background:#FAEEDA; color:#633806; }
+  .sc-60 { background:#FAE5CD; color:#854F0B; }
+  .sc-low { background:#FCEBEB; color:#791F1F; }
+  .sc-rank { color: #999; font-weight:400; width: 28px; text-align:right; padding-right:8px; }
+  .sc-elig-y { color: #27500A; }
+  .sc-elig-n { color: #A32D2D; }
+  .legend { font-size:11px; color:#666; padding-top:8px; line-height:1.6; }
+  details { font-size: 12px; }
+  details summary { cursor: pointer; color: #888; padding: 4px 0; }
+  details[open] summary { color: #444; }
 </style>
 </head>
 <body>
@@ -88,6 +102,23 @@ async function load() {
     document.getElementById('loading').innerHTML = '<div class="err">Error: '+escapeHtml(error.message)+'</div>';
     return;
   }
+
+  // Also fetch BK ratings from service_history for the Scorecard
+  const { data: shData, error: shErr } = await sb
+    .from('service_history')
+    .select('provider_team, rating_value')
+    .gt('rating_value', 0);
+  window.__bkPerCleaner = {};
+  if (!shErr && shData) {
+    shData.forEach(r => {
+      if (!r.provider_team) return;
+      const name = r.provider_team.trim();
+      if (!window.__bkPerCleaner[name]) window.__bkPerCleaner[name] = { sum:0, count:0 };
+      window.__bkPerCleaner[name].sum += r.rating_value;
+      window.__bkPerCleaner[name].count++;
+    });
+  }
+
   render(data);
   document.getElementById('last-update').textContent = 'Actualizado: ' + new Date().toLocaleString('es-PR');
 }
@@ -219,9 +250,95 @@ function render(rows) {
     </div>
   </div>`;
 
+  // === SCORECARD ===
+  // Customer (25) = (BK avg ÷ 5) × 25, baseline 20
+  // Internal QC (50) = (Jenny avg ÷ 5) × 50, fallback BK proxy, else 40
+  // Issues 60d (25) = max(0, 25 - penalty), penalty = S1×10 + S2×5 + S3×2.5 + S4×1.25
+  // BK Customer Rating events EXCLUDED from issues bucket (already in Customer)
+  const allCleaners = new Set([...Object.keys(byCleaner), ...Object.keys(window.__bkPerCleaner || {})]);
+  const scorecard = [];
+  allCleaners.forEach(name => {
+    if (!name) return;
+    const events = (byCleaner[name]?.events) || [];
+    const eventsExcludingBK = events.filter(e => (e.raw_data?.source || '').toLowerCase() !== 'bk customer rating');
+    const sevC = { S1:0, S2:0, S3:0, S4:0 };
+    eventsExcludingBK.forEach(e => { if (sevC[e.severity] !== undefined) sevC[e.severity]++; });
+    const penalty = sevC.S1*10 + sevC.S2*5 + sevC.S3*2.5 + sevC.S4*1.25;
+    const issuesPts = Math.max(0, 25 - penalty);
+
+    const bk = (window.__bkPerCleaner || {})[name];
+    const bkAvg = bk?.count > 0 ? bk.sum / bk.count : null;
+    const customerPts = bkAvg !== null ? (bkAvg / 5) * 25 : 20;
+
+    const jennyScored = events.filter(e => e.supervisor_name === 'Jenny Guilamo' && e.score !== null);
+    let qcPts;
+    let qcAvg = null;
+    if (jennyScored.length > 0) {
+      qcAvg = jennyScored.reduce((s,e) => s + e.score, 0) / jennyScored.length;
+      qcPts = (qcAvg / 5) * 50;
+    } else if (bkAvg !== null) {
+      qcPts = (bkAvg / 5) * 50;
+    } else {
+      qcPts = 40;
+    }
+
+    const total = customerPts + qcPts + issuesPts;
+    const eligible = (bkAvg === null || bkAvg >= 4.5) &&
+                     (jennyScored.length === 0 || qcAvg >= 4.0) &&
+                     sevC.S1 === 0 && sevC.S2 === 0 &&
+                     events.length < 3;
+    scorecard.push({ name, customerPts, qcPts, issuesPts, total, eligible, bkAvg, bkCount: bk?.count || 0, qcAvg, qcCount: jennyScored.length, sevC });
+  });
+  scorecard.sort((a,b) => b.total - a.total);
+
+  function totalCls(t) {
+    if (t >= 90) return 'sc-90';
+    if (t >= 80) return 'sc-80';
+    if (t >= 70) return 'sc-70';
+    if (t >= 60) return 'sc-60';
+    return 'sc-low';
+  }
+
+  html += `<div class="card">
+    <h2>Scorecard general</h2>
+    <p class="small" style="margin:0 0 10px">Score 25 + 50 + 25 = Customer (BK ★) · Internal QC (Jenny ★) · Issues 60d. Eligible = BK ≥ 4.5 · QC ≥ 4.0 · 0 S1/S2 · &lt; 3 eventos en 60d.</p>
+    <table>
+      <thead><tr>
+        <th></th><th>Limpiadora</th>
+        <th style="text-align:right">Customer<br><span class="small" style="font-weight:400">(25)</span></th>
+        <th style="text-align:right">Jenny QC<br><span class="small" style="font-weight:400">(50)</span></th>
+        <th style="text-align:right">Issues 60d<br><span class="small" style="font-weight:400">(25)</span></th>
+        <th style="text-align:right">TOTAL</th>
+        <th style="text-align:center">Eligible</th>
+      </tr></thead>
+      <tbody>`;
+  scorecard.forEach((s, i) => {
+    const datCust = s.bkAvg !== null ? `${s.bkAvg.toFixed(2)}★ (${s.bkCount})` : 'sin data';
+    const datQC = s.qcCount > 0 ? `${s.qcAvg.toFixed(1)}★ (${s.qcCount})` : (s.bkAvg !== null ? 'BK proxy' : 'baseline');
+    const sevSummary = ['S1','S2','S3','S4'].filter(k => s.sevC[k]).map(k => `${k}×${s.sevC[k]}`).join(' ');
+    html += `<tr class="sc-row">
+      <td class="sc-rank">${i+1}</td>
+      <td>${escapeHtml(s.name)}</td>
+      <td style="text-align:right">${s.customerPts.toFixed(1)}<div class="small">${escapeHtml(datCust)}</div></td>
+      <td style="text-align:right">${s.qcPts.toFixed(1)}<div class="small">${escapeHtml(datQC)}</div></td>
+      <td style="text-align:right">${s.issuesPts.toFixed(1)}<div class="small">${escapeHtml(sevSummary || '—')}</div></td>
+      <td style="text-align:right"><span class="sc-total ${totalCls(s.total)}">${s.total.toFixed(1)}</span></td>
+      <td style="text-align:center" class="${s.eligible?'sc-elig-y':'sc-elig-n'}">${s.eligible?'✓':'✗'}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>
+    <details style="margin-top:10px"><summary>Cómo se calcula</summary>
+    <div class="legend">
+    <strong>Customer (25)</strong> = BK avg ÷ 5 × 25. Sin BK ratings → baseline 20.<br>
+    <strong>Internal QC (50)</strong> = Jenny avg ÷ 5 × 50. Sin Jenny → BK proxy. Sin ninguno → baseline 40.<br>
+    <strong>Issues 60d (25)</strong> = max(0, 25 − penalty). Penalty = S1×10 + S2×5 + S3×2.5 + S4×1.25. Eventos derivados de BK ratings <em>excluidos</em> (ya cuentan en Customer).<br>
+    <strong>Color total:</strong> ≥90 verde · 80-89 verde claro · 70-79 amarillo · 60-69 naranja · &lt;60 rojo.
+    </div></details>
+  </div>`;
+
   // Footer with totals
   html += `<div class="small" style="text-align:center;padding:16px 0">
-    Base: ${rows.length} inspecciones cargadas · ${cleaners.length} limpiadoras activas en 60d · datos desde Supabase domo-leads
+    Base: ${rows.length} inspecciones cargadas · ${cleaners.length} limpiadoras activas en 60d · ${scorecard.length} en scorecard · datos desde Supabase domo-leads
   </div>`;
 
   document.getElementById('content').innerHTML = html;
