@@ -93,6 +93,23 @@ const fmtDate = s => { const d = dParse(s); return d.getDate()+' '+fmtMonth[d.ge
 const escapeHtml = s => (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const scoreClass = s => s === null || s === undefined ? '' : s >= 4.5 ? 'score-good' : s >= 4.0 ? 'score-warn' : 'score-bad';
 
+// FIX 2: normalize severity — handle both "S4" and "S4 — Observation" formats.
+const severityKey = sev => {
+  if (!sev) return null;
+  const m = String(sev).match(/^\s*(S[1-4])/i);
+  return m ? m[1].toUpperCase() : null;
+};
+
+// FIX 1: a row counts as a real "catch event" only when Jenny actually inspected
+// (status past Not-Yet-Started) AND a severity was recorded.
+// Empty / Not-Yet-Started rows are bookings scheduled but not yet inspected — they
+// should not trigger Revisión QC.
+const isCatchEvent = r => {
+  if (!r.severity) return false;
+  if (r.status === 'Not Yet Started') return false;
+  return true;
+};
+
 async function load() {
   document.getElementById('loading').hidden = false;
   document.getElementById('loading').textContent = 'Cargando datos...';
@@ -168,9 +185,10 @@ function render(allRows) {
   const cutoff30 = daysAgo(30);
   const cutoff7 = daysAgo(7);
 
-  // Group by cleaner — last 60d, only attributable rows
+  // Group by cleaner — last 60d, only REAL CATCH EVENTS (FIX 1)
+  // Scheduled-but-not-inspected rows (Not Yet Started / no severity) are excluded.
   const byCleaner = {};
-  rows.filter(r => r.cleaner_name && r.service_date >= cutoff60).forEach(r => {
+  rows.filter(r => r.cleaner_name && r.service_date >= cutoff60 && isCatchEvent(r)).forEach(r => {
     const c = byCleaner[r.cleaner_name] = byCleaner[r.cleaner_name] || { events: [] };
     c.events.push(r);
   });
@@ -180,7 +198,11 @@ function render(allRows) {
     const sorted = [...c.events].sort((a,b) => a.service_date.localeCompare(b.service_date));
     const latest = sorted[sorted.length-1];
     const sevCounts = {};
-    c.events.forEach(e => { if (e.severity) sevCounts[e.severity] = (sevCounts[e.severity]||0) + 1; });
+    // FIX 2: normalize severity into S1/S2/S3/S4 bucket
+    c.events.forEach(e => {
+      const k = severityKey(e.severity);
+      if (k) sevCounts[k] = (sevCounts[k]||0) + 1;
+    });
     const sev = ['S1','S2','S3','S4'].filter(k => sevCounts[k]).map(k => `${k} ×${sevCounts[k]}`).join(' · ');
     const scoresWithDates = sorted.filter(e => e.score !== null && e.service_date >= cutoff30).map(e => e.score);
     return {
@@ -204,12 +226,13 @@ function render(allRows) {
 
   // === Property hot list (last 30d) ===
   const propMap = {};
-  rows.filter(r => r.property_name && r.service_date >= cutoff30 && r.severity)
+  rows.filter(r => r.property_name && r.service_date >= cutoff30 && isCatchEvent(r))
       .forEach(r => {
         const p = propMap[r.property_name] = propMap[r.property_name] || { name:r.property_name, count:0, last:null, sevs:[] };
         p.count++;
         if (!p.last || r.service_date > p.last) p.last = r.service_date;
-        p.sevs.push({ sev:r.severity, date:r.service_date });
+        const k = severityKey(r.severity);
+        p.sevs.push({ sev: k || r.severity, date:r.service_date });
       });
   const props = Object.values(propMap).sort((a,b) => b.count - a.count || b.last.localeCompare(a.last)).slice(0, 6);
 
@@ -227,7 +250,7 @@ function render(allRows) {
   html += `<div class="card">
     <h2>Panel de calor · limpiadoras (últimos 60 días)</h2>
     <table><thead><tr>
-      <th>Limpiadora</th><th>Estado</th><th>60d</th><th>Tendencia (30d)</th><th>Última</th>
+      <th>Limpiadora</th><th>Estado</th><th>Catches 60d</th><th>Tendencia (30d)</th><th>Última</th>
     </tr></thead><tbody>`;
   cleaners.forEach(c => {
     const isQC = c.label === 'Revisión QC';
@@ -274,7 +297,11 @@ function render(allRows) {
     const events = (byCleaner[name]?.events) || [];
     const eventsExcludingBK = events.filter(e => (e.raw_data?.source || '').toLowerCase() !== 'bk customer rating');
     const sevC = { S1:0, S2:0, S3:0, S4:0 };
-    eventsExcludingBK.forEach(e => { if (sevC[e.severity] !== undefined) sevC[e.severity]++; });
+    // FIX 2: normalize severity here too
+    eventsExcludingBK.forEach(e => {
+      const k = severityKey(e.severity);
+      if (k && sevC[k] !== undefined) sevC[k]++;
+    });
     const penalty = sevC.S1*10 + sevC.S2*5 + sevC.S3*2.5 + sevC.S4*1.25;
     const issuesPts = Math.max(0, 25 - penalty);
 
