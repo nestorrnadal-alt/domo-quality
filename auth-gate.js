@@ -29,9 +29,16 @@
     catch (e) { return null; }
   }
 
+  // Until the database requires login (public.staff_login_required()), people may choose
+  // "Más tarde" and keep using the page with the public key for this browser session.
+  var LATER_KEY = 'domo-auth-later';
+  function laterChosen() { try { return sessionStorage.getItem(LATER_KEY) === '1'; } catch (e) { return false; } }
+  function setLater(on) { try { on ? sessionStorage.setItem(LATER_KEY, '1') : sessionStorage.removeItem(LATER_KEY); } catch (e) {} }
+  var loginOptional = false;
+
   // Hide the page right away if nobody is signed in (avoids a flash of an empty board).
   var root = document.documentElement;
-  if (!storedSession()) root.classList.add('domo-locked');
+  if (!storedSession() && !laterChosen()) root.classList.add('domo-locked');
 
   var client = window.supabase.createClient(SB_URL, SB_KEY, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: STORAGE_KEY }
@@ -176,6 +183,13 @@
     if (mode === 'login') { link('Primera vez: crear contraseña', 'signup'); link('Olvidé mi contraseña', 'forgot'); }
     else if (mode !== 'denied') link('Volver', 'login');
     card.appendChild(links);
+    if (mode === 'login' && loginOptional) {
+      var later = el('div', { 'class': 'links' });
+      var a = el('a', null, 'Más tarde (por ahora es opcional)');
+      a.addEventListener('click', function () { setLater(true); continueWithoutLogin(); });
+      later.appendChild(a);
+      card.appendChild(later);
+    }
     overlay.appendChild(card);
     var first = overlay.querySelector('input'); if (first) first.focus();
   }
@@ -206,6 +220,24 @@
     document.body.appendChild(chip);
   }
 
+  function continueWithoutLogin() {
+    if (overlay) { overlay.remove(); overlay = null; }
+    root.classList.remove('domo-locked');
+    if (!document.body) { document.addEventListener('DOMContentLoaded', continueWithoutLogin); return; }
+    if (document.getElementById('domo-auth-chip')) return;
+    var chip = el('div', { id: 'domo-auth-chip' }, 'Sin sesión');
+    var go = el('a', null, 'Entrar');
+    go.addEventListener('click', function () { setLater(false); chip.remove(); mode = 'login'; render(); });
+    chip.appendChild(go);
+    document.body.appendChild(chip);
+  }
+
+  async function checkLoginOptional() {
+    var r = await client.rpc('staff_login_required');
+    loginOptional = !r.error && r.data === false;
+    return loginOptional;
+  }
+
   var hadSessionAtLoad = !!storedSession();
   async function afterSignIn() {
     if (!(await checkStaff())) { mode = 'denied'; return render(); }
@@ -216,7 +248,12 @@
   var ready = (async function () {
     var s = (await client.auth.getSession()).data.session;
     if (mode === 'recovery') { render(); return s; } // arrived via password-reset link
-    if (!s) { mode = 'login'; render(); return null; }
+    if (!s) {
+      await checkLoginOptional();
+      if (loginOptional && laterChosen()) { continueWithoutLogin(); return null; }
+      setLater(false);
+      mode = 'login'; render(); return null;
+    }
     if (!(await checkStaff())) { mode = 'denied'; render(); return null; }
     if (!hadSessionAtLoad) { location.reload(); return null; } // e.g. arrived via confirmation link
     root.classList.remove('domo-locked');
